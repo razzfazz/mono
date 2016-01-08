@@ -347,6 +347,7 @@ namespace System.IO {
 		{
 			var eventBuffer = new kevent[32];
 			var newFds = new List<int> ();
+			var timeout = new timespec { tv_sec = (IntPtr)1, tv_nsec = (IntPtr)0 };
 			List<PathData> removeQueue = new List<PathData> ();
 			List<string> rescanQueue = new List<string> ();
 
@@ -355,7 +356,7 @@ namespace System.IO {
 			while (!requestStop) {
 				var changes = CreateChangeList (ref newFds);
 
-				int numEvents = kevent_notimeout (conn, changes, changes.Length, eventBuffer, eventBuffer.Length, IntPtr.Zero);
+				int numEvents = kevent (conn, changes, changes.Length, eventBuffer, eventBuffer.Length, ref timeout);
 
 				if (numEvents == -1) {
 					// Stop () signals us to stop by closing the connection
@@ -657,9 +658,6 @@ namespace System.IO {
 
 		[DllImport ("libc")]
 		extern static int kevent (int kq, [In]kevent[] ev, int nchanges, [Out]kevent[] evtlist, int nevents, [In] ref timespec time);
-
-		[DllImport ("libc", EntryPoint="kevent")]
-		extern static int kevent_notimeout (int kq, [In]kevent[] ev, int nchanges, [Out]kevent[] evtlist, int nevents, IntPtr ptr);
 	}
 
 	class KeventWatcher : IFileWatcher
