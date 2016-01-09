@@ -395,8 +395,20 @@ namespace System.IO {
 					}
 
 					if ((kevt.fflags & FilterFlags.VNodeRename) == FilterFlags.VNodeRename) {
-							UpdatePath (pathData);
-					} 
+						/* We can simply remove the entire subtree here, as
+						   the move will trigger a directory update and thus
+						   a re-scan at the new location, which will cause any
+						   children to be re-added. */
+						removeQueue.Add (pathData);
+						if (pathData.IsDirectory) {
+							var prefix = pathData.Path + Path.DirectorySeparatorChar;
+							foreach (var path in pathsDict.Keys)
+								if (path.StartsWith (prefix)) {
+									removeQueue.Add (pathsDict [path]);
+								}
+						}
+						PostEvent (FileAction.RenamedOldName, pathData.Path);
+					}
 
 					if ((kevt.fflags & FilterFlags.VNodeWrite) == FilterFlags.VNodeWrite) {
 						if (pathData.IsDirectory) //TODO: Check if dirs trigger Changed events on .NET
@@ -593,6 +605,8 @@ namespace System.IO {
 			if (action == FileAction.RenamedNewName) {
 				string newName = newPath.Substring (fullPathNoLastSlash.Length + 1);
 				renamed = new RenamedEventArgs (WatcherChangeTypes.Renamed, fsw.Path, newName, name);
+			} else if (action == FileAction.RenamedOldName) {
+				renamed = new RenamedEventArgs (WatcherChangeTypes.Renamed, fsw.Path, null, name);
 			}
 				
 			fsw.DispatchEvents (action, name, ref renamed);
