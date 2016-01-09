@@ -232,8 +232,8 @@ namespace System.IO {
 					conn = -1;
 				}
 
-				if (!thread.Join (2000))
-					thread.Abort ();
+				while (!thread.Join (2000))
+					thread.Interrupt ();
 
 				requestStop = false;
 				started = false;
@@ -374,21 +374,7 @@ namespace System.IO {
 			while (!requestStop) {
 				var changes = CreateChangeList (ref newFds);
 
-				// We are calling an icall, so have to marshal manually
-				// Marshal in
-				int ksize = Marshal.SizeOf<kevent> ();
-				var changesNative = Marshal.AllocHGlobal (ksize * changes.Length);
-				for (int i = 0; i < changes.Length; ++i)
-					Marshal.StructureToPtr (changes [i], changesNative + (i * ksize), false);
-				var eventBufferNative = Marshal.AllocHGlobal (ksize * eventBuffer.Length);
-
-				int numEvents = kevent_notimeout (ref conn, changesNative, changes.Length, eventBufferNative, eventBuffer.Length);
-
-				// Marshal out
-				Marshal.FreeHGlobal (changesNative);
-				for (int i = 0; i < numEvents; ++i)
-					eventBuffer [i] = Marshal.PtrToStructure<kevent> (eventBufferNative + (i * ksize));
-				Marshal.FreeHGlobal (eventBufferNative);
+				int numEvents = kevent_notimeout (conn, changes, changes.Length, eventBuffer, eventBuffer.Length, IntPtr.Zero);
 
 				if (numEvents == -1) {
 					// Stop () signals us to stop by closing the connection
@@ -401,6 +387,7 @@ namespace System.IO {
 
 					continue;
 				}
+
 				retries = 0;
 
 				for (var i = 0; i < numEvents; i++) {
@@ -428,8 +415,20 @@ namespace System.IO {
 					}
 
 					if ((kevt.fflags & FilterFlags.VNodeRename) == FilterFlags.VNodeRename) {
-							UpdatePath (pathData);
-					} 
+						/* We can simply remove the entire subtree here, as
+						   the move will trigger a directory update and thus
+						   a re-scan at the new location, which will cause any
+						   children to be re-added. */
+						removeQueue.Add (pathData);
+						if (pathData.IsDirectory) {
+							var prefix = pathData.Path + Path.DirectorySeparatorChar;
+							foreach (var path in pathsDict.Keys)
+								if (path.StartsWith (prefix)) {
+									removeQueue.Add (pathsDict [path]);
+								}
+						}
+						PostEvent (FileAction.RenamedOldName, pathData.Path);
+					}
 
 					if ((kevt.fflags & FilterFlags.VNodeWrite) == FilterFlags.VNodeWrite) {
 						if (pathData.IsDirectory) //TODO: Check if dirs trigger Changed events on .NET
@@ -626,6 +625,8 @@ namespace System.IO {
 			if (action == FileAction.RenamedNewName) {
 				string newName = (newPath.Length > fullPathNoLastSlash.Length) ? newPath.Substring (fullPathNoLastSlash.Length + 1) : String.Empty;
 				renamed = new RenamedEventArgs (WatcherChangeTypes.Renamed, fsw.Path, newName, name);
+			} else if (action == FileAction.RenamedOldName) {
+				renamed = new RenamedEventArgs (WatcherChangeTypes.Renamed, fsw.Path, null, name);
 			}
 				
 			fsw.DispatchEvents (action, name, ref renamed);
@@ -695,8 +696,8 @@ namespace System.IO {
 		[DllImport ("libc", SetLastError=true)]
 		extern static int kevent (int kq, [In]kevent[] ev, int nchanges, [Out]kevent[] evtlist, int nevents, [In] ref timespec time);
 
-		[MethodImplAttribute(MethodImplOptions.InternalCall)]
-		extern static int kevent_notimeout (ref int kq, IntPtr ev, int nchanges, IntPtr evtlist, int nevents);
+		[DllImport ("libc", EntryPoint="kevent", SetLastError=true)]
+		extern static int kevent_notimeout (int kq, [In]kevent[] ev, int nchanges, [Out]kevent[] evtlist, int nevents, IntPtr ptr);
 	}
 
 	class KeventWatcher : IFileWatcher
