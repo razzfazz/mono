@@ -390,6 +390,9 @@ namespace System.IO {
 					eventBuffer [i] = Marshal.PtrToStructure<kevent> (eventBufferNative + (i * ksize));
 				Marshal.FreeHGlobal (eventBufferNative);
 
+				if (requestStop)
+					break;
+
 				if (numEvents == -1) {
 					// Stop () signals us to stop by closing the connection
 					if (requestStop)
@@ -628,14 +631,18 @@ namespace System.IO {
 				renamed = new RenamedEventArgs (WatcherChangeTypes.Renamed, fsw.Path, newName, name);
 			}
 				
-			fsw.DispatchEvents (action, name, ref renamed);
-
-			if (fsw.Waiting) {
+			var thr = new Thread(() => {
 				lock (fsw) {
-					fsw.Waiting = false;
-					System.Threading.Monitor.PulseAll (fsw);
+					fsw.DispatchEvents (action, path, ref renamed);
+
+					if (fsw.Waiting) {
+						fsw.Waiting = false;
+						System.Threading.Monitor.PulseAll (fsw);
+					}
 				}
-			}
+			});
+			thr.IsBackground = true;
+			thr.Start();
 		}
 
 		private string GetFilenameFromFd (int fd)
