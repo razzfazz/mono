@@ -232,8 +232,8 @@ namespace System.IO {
 					conn = -1;
 				}
 
-				if (!thread.Join (2000))
-					thread.Abort ();
+				while (!thread.Join (2000))
+					thread.Interrupt ();
 
 				requestStop = false;
 				started = false;
@@ -300,11 +300,10 @@ namespace System.IO {
 			else
 				fullPathNoLastSlash = fsw.FullPath;
 				
-			// GetFilenameFromFd() returns the *realpath* which can be different than fsw.FullPath because symlinks.
+			// realpath() returns the *realpath* which can be different than fsw.FullPath because symlinks.
 			// If so, introduce a fixup step.
-			int fd = open (fullPathNoLastSlash, O_EVTONLY, 0);
-			var resolvedFullPath = GetFilenameFromFd (fd);
-			close (fd);
+			var sb = new StringBuilder (__DARWIN_MAXPATHLEN);
+			var resolvedFullPath = (realpath(fsw.FullPath, sb) == IntPtr.Zero) ? "" : sb.ToString();
 
 			if (resolvedFullPath != fullPathNoLastSlash)
 				fixupPath = resolvedFullPath;
@@ -425,8 +424,20 @@ namespace System.IO {
 					}
 
 					if ((kevt.fflags & FilterFlags.VNodeRename) == FilterFlags.VNodeRename) {
-							UpdatePath (pathData);
-					} 
+						/* We can simply remove the entire subtree here, as
+						   the move will trigger a directory update and thus
+						   a re-scan at the new location, which will cause any
+						   children to be re-added. */
+						removeQueue.Add (pathData);
+						if (pathData.IsDirectory) {
+							var prefix = pathData.Path + Path.DirectorySeparatorChar;
+							foreach (var path in pathsDict.Keys)
+								if (path.StartsWith (prefix)) {
+									removeQueue.Add (pathsDict [path]);
+								}
+						}
+						PostEvent (FileAction.RenamedOldName, pathData.Path);
+					}
 
 					if ((kevt.fflags & FilterFlags.VNodeWrite) == FilterFlags.VNodeWrite) {
 						if (pathData.IsDirectory) //TODO: Check if dirs trigger Changed events on .NET
@@ -614,15 +625,17 @@ namespace System.IO {
 				return;
 
 			// e.Name
-			string name = path.Substring (fullPathNoLastSlash.Length + 1); 
+			string name = (path.Length > fullPathNoLastSlash.Length) ? path.Substring (fullPathNoLastSlash.Length + 1) : String.Empty;
 
 			// only post events that match filter pattern. check both old and new paths for renames
 			if (!fsw.Pattern.IsMatch (path) && (newPath == null || !fsw.Pattern.IsMatch (newPath)))
 				return;
 				
 			if (action == FileAction.RenamedNewName) {
-				string newName = newPath.Substring (fullPathNoLastSlash.Length + 1);
+				string newName = (newPath.Length > fullPathNoLastSlash.Length) ? newPath.Substring (fullPathNoLastSlash.Length + 1) : String.Empty;
 				renamed = new RenamedEventArgs (WatcherChangeTypes.Renamed, fsw.Path, newName, name);
+			} else if (action == FileAction.RenamedOldName) {
+				renamed = new RenamedEventArgs (WatcherChangeTypes.Renamed, fsw.Path, null, name);
 			}
 				
 			fsw.DispatchEvents (action, name, ref renamed);
@@ -679,6 +692,9 @@ namespace System.IO {
 
 		[DllImport ("libc", SetLastError=true)]
 		extern static int open (string path, int flags, int mode_t);
+
+		[DllImport ("libc", CharSet=CharSet.Auto, SetLastError=true)]
+		static extern IntPtr realpath (string pathname, StringBuilder sb);
 
 		[DllImport ("libc")]
 		extern static int close (int fd);
